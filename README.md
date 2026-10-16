@@ -8,13 +8,17 @@ Exemplos de playbooks prontos para serem carregados como projeto no
 ```
 .
 ├── collections/
-│   └── requirements.yml      # coleções instaladas pelo AAP na sincronização
+│   └── requirements.yml          # coleções instaladas pelo AAP na sincronização
 ├── playbooks/
 │   └── openshift/
-│       └── create_project.yml
+│       ├── create_project.yml    # CreateProject
+│       ├── deploy_httpd.yml      # DeployHttpd
+│       └── tasks/
+│           └── check_credentials.yml   # tarefas compartilhadas
 └── aap/
-    └── surveys/              # surveys de exemplo para os Job Templates
-        └── openshift_create_project.json
+    └── surveys/                  # surveys de exemplo para os Job Templates
+        ├── openshift_create_project.json
+        └── openshift_deploy_httpd.json
 ```
 
 ## Configurando no AAP
@@ -28,12 +32,36 @@ Exemplos de playbooks prontos para serem carregados como projeto no
 4. **Survey** (opcional) – use o JSON correspondente em `aap/surveys/` como
    referência para cadastrar as perguntas.
 
+### Credencial e Execution Environment (OpenShift)
+
+**Credencial:** tipo *OpenShift or Kubernetes API Bearer Token*, com a URL da
+API do cluster (ex.: `https://api.cluster.exemplo.com:6443`) e o token de um
+usuário ou service account com permissão para criar projetos
+(`self-provisioner` ou superior). A mesma credencial serve para os dois
+playbooks.
+
+**Execution Environment:** precisa da coleção `kubernetes.core` e da biblioteca
+Python `kubernetes`. O EE suportado padrão do AAP (`ee-supported-rhel9`) já
+atende.
+
 ## Playbooks
 
-### `playbooks/openshift/create_project.yml`
+### CreateProject – `playbooks/openshift/create_project.yml`
 
-Cria um projeto no OpenShift (equivalente a `oc new-project`) e implanta nele
-uma aplicação httpd de exemplo composta por:
+Cria um projeto vazio no OpenShift (equivalente a `oc new-project`). Se o
+projeto já existir, nada é alterado.
+
+| Variável               | Obrigatória | Padrão | Descrição                              |
+|------------------------|-------------|--------|----------------------------------------|
+| `project_name`         | sim         |        | Nome do projeto (padrão DNS, até 63 caracteres) |
+| `project_display_name` | não         | `""`   | Nome de exibição no console            |
+| `project_description`  | não         | `""`   | Descrição do projeto                   |
+
+Publica `project_name` com `set_stats`.
+
+### DeployHttpd – `playbooks/openshift/deploy_httpd.yml`
+
+Implanta uma aplicação httpd de exemplo num projeto **que já existe**:
 
 - **Deployment** com a imagem `httpd` do registry interno do cluster
   (`image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest`)
@@ -43,36 +71,32 @@ uma aplicação httpd de exemplo composta por:
 O playbook espera o Deployment ficar disponível e mostra a URL no final. Tudo
 é idempotente: rodar de novo não duplica nada.
 
-| Variável               | Obrigatória | Padrão   | Descrição                              |
-|------------------------|-------------|----------|----------------------------------------|
-| `project_name`         | sim         |          | Nome do projeto (padrão DNS, até 63 caracteres) |
-| `project_display_name` | não         | `""`     | Nome de exibição no console            |
-| `project_description`  | não         | `""`     | Descrição do projeto                   |
-| `deploy_sample_app`    | não         | `true`   | Implanta a aplicação de exemplo        |
-| `app_name`             | não         | `httpd`  | Nome do Deployment, Service e Route    |
-| `app_image`            | não         | imagem `httpd` do registry interno | Imagem do container |
+| Variável       | Obrigatória | Padrão  | Descrição                              |
+|----------------|-------------|---------|----------------------------------------|
+| `project_name` | sim         |         | Projeto de destino (precisa existir)   |
+| `app_name`     | não         | `httpd` | Nome do Deployment, Service e Route    |
+| `app_image`    | não         | imagem `httpd` do registry interno | Imagem do container |
 
-Ao final, `project_name` e `app_url` são publicados com `set_stats`, então
-ficam disponíveis para os próximos nós de um Workflow Template.
+Publica `project_name` e `app_url` com `set_stats`.
 
 A imagem padrão vem da ImageStream `httpd` do namespace `openshift`, criada
 pelo Samples Operator. Se ela não existir no seu cluster, informe outra imagem
 em `app_image`.
 
-**Credencial:** tipo *OpenShift or Kubernetes API Bearer Token*, com a URL da
-API do cluster (ex.: `https://api.cluster.exemplo.com:6443`) e o token de um
-usuário ou service account com permissão para criar projetos
-(`self-provisioner` ou superior).
+### Encadeando os dois num Workflow
 
-**Execution Environment:** precisa da coleção `kubernetes.core` e da biblioteca
-Python `kubernetes`. O EE suportado padrão do AAP (`ee-supported-rhel9`) já
-atende.
+Crie um Workflow Template com o nó **CreateProject** seguido de
+**DeployHttpd** (na saída *On Success*). Como o CreateProject publica
+`project_name` com `set_stats`, o DeployHttpd recebe o valor automaticamente.
+Coloque o survey no Workflow (com `project_name` e, se quiser, `app_name`) em
+vez de nos Job Templates individuais.
 
-Execução local para teste:
+## Execução local para teste
 
 ```bash
 ansible-galaxy collection install -r collections/requirements.yml
 export K8S_AUTH_HOST=https://api.cluster.exemplo.com:6443
 export K8S_AUTH_API_KEY=$(oc whoami -t)
 ansible-playbook playbooks/openshift/create_project.yml -e project_name=meu-projeto
+ansible-playbook playbooks/openshift/deploy_httpd.yml   -e project_name=meu-projeto
 ```

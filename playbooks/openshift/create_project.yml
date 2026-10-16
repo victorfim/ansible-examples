@@ -1,15 +1,10 @@
 ---
-# Cria um projeto (namespace) no OpenShift e, opcionalmente, implanta nele
-# uma aplicação httpd de exemplo com Deployment, Service e Route.
+# CreateProject: cria um projeto (namespace) vazio no OpenShift.
 #
 # Variáveis:
 #   project_name          (obrigatória) nome do projeto, ex.: "minha-app-dev"
 #   project_display_name  (opcional)    nome de exibição no console
 #   project_description   (opcional)    descrição do projeto
-#   deploy_sample_app     (opcional)    implanta a aplicação de exemplo; padrão true
-#   app_name              (opcional)    nome da aplicação; padrão "httpd"
-#   app_image             (opcional)    imagem do container; padrão é a imagem
-#                                       httpd do registry interno do cluster
 #
 # Autenticação: no AAP, associe ao Job Template uma credencial do tipo
 # "OpenShift or Kubernetes API Bearer Token". Ela injeta K8S_AUTH_HOST,
@@ -18,9 +13,12 @@
 #
 # O projeto é criado via ProjectRequest (mesmo comportamento do
 # `oc new-project`), respeitando o template de projeto do cluster.
-# Tudo é idempotente: rodar de novo não duplica nada.
+# Se o projeto já existir, nada é alterado.
+#
+# Ao final, publica project_name com set_stats; num Workflow Template, o
+# próximo nó (ex.: deploy_httpd.yml) recebe essa variável automaticamente.
 
-- name: Criar projeto no OpenShift com aplicação httpd de exemplo
+- name: CreateProject
   hosts: localhost
   connection: local
   gather_facts: false
@@ -28,17 +26,9 @@
   vars:
     project_display_name: ""
     project_description: ""
-    deploy_sample_app: true
-    app_name: httpd
-    app_image: image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest
-    app_labels:
-      app: "{{ app_name }}"
-      app.kubernetes.io/name: "{{ app_name }}"
-      app.kubernetes.io/part-of: "{{ project_name }}"
-      app.openshift.io/runtime: apache
 
   tasks:
-    - name: Validar os parâmetros
+    - name: Validar o nome do projeto
       ansible.builtin.assert:
         that:
           - project_name is defined
@@ -54,37 +44,8 @@
           e 'kube-' e nomes reservados não são permitidos.
         quiet: true
 
-    - name: Validar o nome da aplicação
-      ansible.builtin.assert:
-        that:
-          - app_name is match('^[a-z]([-a-z0-9]*[a-z0-9])?$')
-          # O host padrão da Route é <app_name>-<project_name>.<domínio>,
-          # e esse primeiro trecho do host não pode passar de 63 caracteres.
-          - (app_name | length) + (project_name | length) + 1 <= 63
-        fail_msg: >-
-          Nome de aplicação inválido: '{{ app_name }}'. Use letras minúsculas,
-          números e hífen, começando com letra. A soma dos tamanhos de
-          app_name e project_name precisa ser no máximo 62 caracteres.
-        quiet: true
-      when: deploy_sample_app | bool
-
-    - name: Verificar se há credencial do OpenShift
-      ansible.builtin.assert:
-        that: >-
-          lookup('ansible.builtin.env', 'K8S_AUTH_HOST') | length > 0 or
-          lookup('ansible.builtin.env', 'K8S_AUTH_KUBECONFIG') | length > 0 or
-          lookup('ansible.builtin.env', 'KUBECONFIG') | length > 0 or
-          '~/.kube/config' | expanduser is file
-        fail_msg: >-
-          Nenhuma credencial do OpenShift encontrada. No AAP, associe ao Job
-          Template uma credencial do tipo "OpenShift or Kubernetes API Bearer
-          Token" (aba Details > Credentials). Fora do AAP, exporte
-          K8S_AUTH_HOST e K8S_AUTH_API_KEY ou faça `oc login`.
-        quiet: true
-
-    # ------------------------------------------------------------------
-    # Projeto
-    # ------------------------------------------------------------------
+    - name: Verificar credencial
+      ansible.builtin.import_tasks: tasks/check_credentials.yml
 
     - name: Verificar se o projeto já existe
       kubernetes.core.k8s_info:
@@ -124,130 +85,14 @@
       delay: 5
       when: created_project is changed
 
-    # ------------------------------------------------------------------
-    # Aplicação de exemplo: Deployment + Service + Route
-    # ------------------------------------------------------------------
-
-    - name: Implantar a aplicação httpd de exemplo
-      when: deploy_sample_app | bool
-      block:
-        - name: Criar Deployment, Service e Route
-          kubernetes.core.k8s:
-            state: present
-            namespace: "{{ project_name }}"
-            definition:
-              - kind: Deployment
-                apiVersion: apps/v1
-                metadata:
-                  name: "{{ app_name }}"
-                  labels: "{{ app_labels }}"
-                spec:
-                  replicas: 1
-                  selector:
-                    matchLabels:
-                      app: "{{ app_name }}"
-                  template:
-                    metadata:
-                      labels:
-                        app: "{{ app_name }}"
-                    spec:
-                      containers:
-                        - name: container
-                          image: "{{ app_image }}"
-                          ports:
-                            - containerPort: 8080
-                              protocol: TCP
-                          resources: {}
-                          terminationMessagePath: /dev/termination-log
-                          terminationMessagePolicy: File
-                          imagePullPolicy: Always
-                      restartPolicy: Always
-                      terminationGracePeriodSeconds: 30
-                      dnsPolicy: ClusterFirst
-                      securityContext: {}
-                      schedulerName: default-scheduler
-                  strategy:
-                    type: RollingUpdate
-                    rollingUpdate:
-                      maxUnavailable: 25%
-                      maxSurge: 25%
-                  revisionHistoryLimit: 10
-                  progressDeadlineSeconds: 600
-
-              - kind: Service
-                apiVersion: v1
-                metadata:
-                  name: "{{ app_name }}"
-                  labels: "{{ app_labels }}"
-                spec:
-                  selector:
-                    app: "{{ app_name }}"
-                  ports:
-                    - name: http
-                      port: 8080
-                      targetPort: 8080
-                      protocol: TCP
-
-              - kind: Route
-                apiVersion: route.openshift.io/v1
-                metadata:
-                  name: "{{ app_name }}"
-                  labels: "{{ app_labels }}"
-                spec:
-                  to:
-                    kind: Service
-                    name: "{{ app_name }}"
-                  port:
-                    targetPort: http
-                  tls:
-                    termination: edge
-                    insecureEdgeTerminationPolicy: Redirect
-
-        - name: Aguardar a aplicação ficar disponível
-          kubernetes.core.k8s_info:
-            api_version: apps/v1
-            kind: Deployment
-            namespace: "{{ project_name }}"
-            name: "{{ app_name }}"
-            wait: true
-            wait_condition:
-              type: Available
-              status: "True"
-            wait_timeout: 300
-
-        - name: Obter o endereço da aplicação
-          kubernetes.core.k8s_info:
-            api_version: route.openshift.io/v1
-            kind: Route
-            namespace: "{{ project_name }}"
-            name: "{{ app_name }}"
-          register: app_route
-          until: app_route.resources[0].spec.host | default('') | length > 0
-          retries: 6
-          delay: 5
-
-        - name: Guardar o endereço da aplicação
-          ansible.builtin.set_fact:
-            app_url: "https://{{ app_route.resources[0].spec.host }}"
-
-    # ------------------------------------------------------------------
-    # Resultado
-    # ------------------------------------------------------------------
-
     - name: Resultado
       ansible.builtin.debug:
-        msg:
-          - >-
-            {{ 'Projeto ' ~ project_name ~ ' criado com sucesso.'
-               if created_project is changed
-               else 'Projeto ' ~ project_name ~ ' já existia.' }}
-          - >-
-            {{ 'Aplicação ' ~ app_name ~ ' disponível em ' ~ app_url
-               if app_url is defined
-               else 'Aplicação de exemplo não implantada (deploy_sample_app=false).' }}
+        msg: >-
+          {{ 'Projeto ' ~ project_name ~ ' criado com sucesso.'
+             if created_project is changed
+             else 'Projeto ' ~ project_name ~ ' já existia; nada foi alterado.' }}
 
     - name: Publicar o resultado para outros sistemas (RHDH, workflows)
       ansible.builtin.set_stats:
         data:
           project_name: "{{ project_name }}"
-          app_url: "{{ app_url | default('') }}"

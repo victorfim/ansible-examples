@@ -1,0 +1,171 @@
+---
+# DeployHttpd: implanta uma aplicação httpd de exemplo (Deployment, Service
+# e Route) num projeto do OpenShift que já existe.
+#
+# Variáveis:
+#   project_name  (obrigatória) projeto onde a aplicação será implantada
+#   app_name      (opcional)    nome do Deployment, Service e Route; padrão "httpd"
+#   app_image     (opcional)    imagem do container; padrão é a imagem httpd
+#                               do registry interno do cluster
+#
+# Autenticação: mesma credencial do create_project.yml
+# ("OpenShift or Kubernetes API Bearer Token").
+#
+# Idempotente: rodar de novo não duplica nada. Ao final, publica project_name
+# e app_url com set_stats.
+
+- name: DeployHttpd
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    app_name: httpd
+    app_image: image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest
+    app_labels:
+      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ app_name }}"
+      app.kubernetes.io/part-of: "{{ project_name }}"
+      app.openshift.io/runtime: apache
+
+  tasks:
+    - name: Validar os parâmetros
+      ansible.builtin.assert:
+        that:
+          - project_name is defined
+          - project_name | length > 0
+          - app_name is match('^[a-z]([-a-z0-9]*[a-z0-9])?$')
+          # O host padrão da Route é <app_name>-<project_name>.<domínio>,
+          # e esse primeiro trecho do host não pode passar de 63 caracteres.
+          - (app_name | length) + (project_name | length) + 1 <= 63
+        fail_msg: >-
+          Parâmetros inválidos. project_name é obrigatório. app_name ('{{ app_name }}')
+          deve ter letras minúsculas, números e hífen, começando com letra, e a
+          soma dos tamanhos de app_name e project_name precisa ser no máximo
+          62 caracteres.
+        quiet: true
+
+    - name: Verificar credencial
+      ansible.builtin.import_tasks: tasks/check_credentials.yml
+
+    - name: Verificar se o projeto existe
+      kubernetes.core.k8s_info:
+        api_version: project.openshift.io/v1
+        kind: Project
+        name: "{{ project_name }}"
+      register: target_project
+      failed_when: false
+
+    - name: Confirmar que o projeto existe e está acessível
+      ansible.builtin.assert:
+        that: target_project.resources | default([]) | length > 0
+        fail_msg: >-
+          O projeto '{{ project_name }}' não existe ou a credencial não tem
+          acesso a ele. Crie-o antes com o playbook create_project.yml.
+          {{ target_project.msg | default('') }}
+        quiet: true
+
+    - name: Criar Deployment, Service e Route
+      kubernetes.core.k8s:
+        state: present
+        namespace: "{{ project_name }}"
+        definition:
+          - kind: Deployment
+            apiVersion: apps/v1
+            metadata:
+              name: "{{ app_name }}"
+              labels: "{{ app_labels }}"
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: "{{ app_name }}"
+              template:
+                metadata:
+                  labels:
+                    app: "{{ app_name }}"
+                spec:
+                  containers:
+                    - name: container
+                      image: "{{ app_image }}"
+                      ports:
+                        - containerPort: 8080
+                          protocol: TCP
+                      resources: {}
+                      terminationMessagePath: /dev/termination-log
+                      terminationMessagePolicy: File
+                      imagePullPolicy: Always
+                  restartPolicy: Always
+                  terminationGracePeriodSeconds: 30
+                  dnsPolicy: ClusterFirst
+                  securityContext: {}
+                  schedulerName: default-scheduler
+              strategy:
+                type: RollingUpdate
+                rollingUpdate:
+                  maxUnavailable: 25%
+                  maxSurge: 25%
+              revisionHistoryLimit: 10
+              progressDeadlineSeconds: 600
+
+          - kind: Service
+            apiVersion: v1
+            metadata:
+              name: "{{ app_name }}"
+              labels: "{{ app_labels }}"
+            spec:
+              selector:
+                app: "{{ app_name }}"
+              ports:
+                - name: http
+                  port: 8080
+                  targetPort: 8080
+                  protocol: TCP
+
+          - kind: Route
+            apiVersion: route.openshift.io/v1
+            metadata:
+              name: "{{ app_name }}"
+              labels: "{{ app_labels }}"
+            spec:
+              to:
+                kind: Service
+                name: "{{ app_name }}"
+              port:
+                targetPort: http
+              tls:
+                termination: edge
+                insecureEdgeTerminationPolicy: Redirect
+
+    - name: Aguardar a aplicação ficar disponível
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ project_name }}"
+        name: "{{ app_name }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 300
+
+    - name: Obter o endereço da aplicação
+      kubernetes.core.k8s_info:
+        api_version: route.openshift.io/v1
+        kind: Route
+        namespace: "{{ project_name }}"
+        name: "{{ app_name }}"
+      register: app_route
+      until: app_route.resources[0].spec.host | default('') | length > 0
+      retries: 6
+      delay: 5
+
+    - name: Resultado
+      ansible.builtin.debug:
+        msg: "Aplicação {{ app_name }} disponível em https://{{ app_route.resources[0].spec.host }}"
+
+    - name: Publicar o resultado para outros sistemas (RHDH, workflows)
+      ansible.builtin.set_stats:
+        data:
+          project_name: "{{ project_name }}"
+          app_url: "https://{{ app_route.resources[0].spec.host }}"
