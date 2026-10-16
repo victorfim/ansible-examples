@@ -42,6 +42,20 @@
         success_msg: "Nome de projeto válido: {{ project_name }}"
         quiet: true
 
+    - name: Verificar se há credencial do OpenShift
+      ansible.builtin.assert:
+        that: >-
+          lookup('ansible.builtin.env', 'K8S_AUTH_HOST') | length > 0 or
+          lookup('ansible.builtin.env', 'K8S_AUTH_KUBECONFIG') | length > 0 or
+          lookup('ansible.builtin.env', 'KUBECONFIG') | length > 0 or
+          '~/.kube/config' | expanduser is file
+        fail_msg: >-
+          Nenhuma credencial do OpenShift encontrada. No AAP, associe ao Job
+          Template uma credencial do tipo "OpenShift or Kubernetes API Bearer
+          Token" (aba Details > Credentials). Fora do AAP, exporte
+          K8S_AUTH_HOST e K8S_AUTH_API_KEY ou faça `oc login`.
+        quiet: true
+
     - name: Verificar se o projeto já existe
       kubernetes.core.k8s_info:
         api_version: project.openshift.io/v1
@@ -49,8 +63,10 @@
         name: "{{ project_name }}"
       register: existing_project
       # Usuários sem permissão de admin recebem 403 ao consultar um projeto
-      # inexistente; nesse caso seguimos para a criação.
-      failed_when: false
+      # inexistente; nesse caso seguimos para a criação. Outros erros falham.
+      failed_when: >-
+        existing_project is failed and
+        not (existing_project.msg | default('') is search('Forbidden|403'))
 
     - name: Criar o projeto
       kubernetes.core.k8s:
