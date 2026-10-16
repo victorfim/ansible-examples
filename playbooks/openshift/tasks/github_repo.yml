@@ -1,0 +1,96 @@
+---
+# Tarefas compartilhadas: localiza (e, se permitido, cria) o repositório
+# GitHub <github_owner>/<github_repo_name>.
+#
+# Entradas:
+#   github_repo_name          nome do repositório (o nome do projeto)
+#   github_repo_create        true = cria se não existir; false = falha
+#   github_repo_description   (opcional) descrição usada na criação
+#   + variáveis de vars/catalog.yml
+#
+# Saída: github_repo (JSON do repositório na API do GitHub)
+
+- name: Verificar configuração do GitHub
+  ansible.builtin.assert:
+    that:
+      - github_token | default('') | length > 0
+      - github_owner | default('') | length > 0
+      - github_repo_visibility in ['private', 'public']
+    fail_msg: >-
+      Configuração do GitHub incompleta. No AAP, associe ao Job Template a
+      credencial "GitHub + Developer Hub Catalog" (aap/credential_types/), ou
+      informe github_token e github_owner. github_repo_visibility deve ser
+      private ou public.
+    quiet: true
+
+- name: Consultar o repositório no GitHub
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/http_request.yml"
+  vars:
+    req_desc: "Consultar o repositório {{ github_owner }}/{{ github_repo_name }}"
+    req_url: "{{ github_api_url }}/repos/{{ github_owner }}/{{ github_repo_name }}"
+    req_token: "{{ github_token }}"
+    req_headers: "{{ github_headers }}"
+    req_status: [200, 404]
+
+- name: Guardar o resultado da consulta
+  ansible.builtin.set_fact:
+    _github_repo_lookup: "{{ http_response }}"
+
+- name: Confirmar que o repositório existe
+  ansible.builtin.assert:
+    that: _github_repo_lookup.status == 200 or github_repo_create | bool
+    fail_msg: >-
+      O repositório {{ github_owner }}/{{ github_repo_name }} não existe no
+      GitHub. Ele é criado pelo playbook create_project.yml; rode-o antes
+      para o projeto '{{ github_repo_name }}'.
+    quiet: true
+
+- name: Usar o repositório existente
+  ansible.builtin.set_fact:
+    github_repo: "{{ _github_repo_lookup.json }}"
+  when: _github_repo_lookup.status == 200
+
+- name: Criar o repositório
+  when: _github_repo_lookup.status == 404
+  block:
+    - name: Descobrir se o dono é organização ou usuário
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/http_request.yml"
+      vars:
+        req_desc: "Consultar o dono {{ github_owner }} no GitHub"
+        req_url: "{{ github_api_url }}/users/{{ github_owner }}"
+        req_token: "{{ github_token }}"
+        req_headers: "{{ github_headers }}"
+
+    - name: Criar o repositório no GitHub
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/http_request.yml"
+      vars:
+        req_desc: "Criar o repositório {{ github_owner }}/{{ github_repo_name }}"
+        # Organização: POST /orgs/{org}/repos. Usuário: POST /user/repos
+        # (cria no dono do token, que precisa ser o próprio github_owner).
+        req_url: >-
+          {{ github_api_url ~ ('/orgs/' ~ github_owner ~ '/repos'
+             if http_response.json.type == 'Organization' else '/user/repos') }}
+        req_method: POST
+        req_token: "{{ github_token }}"
+        req_headers: "{{ github_headers }}"
+        req_status: [201]
+        req_body:
+          name: "{{ github_repo_name }}"
+          description: "{{ github_repo_description | default('') }}"
+          private: "{{ github_repo_visibility == 'private' }}"
+          # Cria o branch padrão com um commit inicial.
+          auto_init: true
+
+    - name: Usar o repositório criado
+      ansible.builtin.set_fact:
+        github_repo: "{{ http_response.json }}"
+
+    - name: Confirmar o dono do repositório criado
+      ansible.builtin.assert:
+        that: github_repo.owner.login | lower == github_owner | lower
+        fail_msg: >-
+          O repositório foi criado em {{ github_repo.full_name }}, e não em
+          {{ github_owner }}. Quando github_owner é um usuário, o token precisa
+          pertencer a ele. Apague o repositório criado por engano e ajuste o
+          token ou o github_owner.
+        quiet: true

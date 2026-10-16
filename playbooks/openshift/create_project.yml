@@ -15,6 +15,11 @@
 # `oc new-project`), respeitando o template de projeto do cluster.
 # Se o projeto já existir, nada é alterado.
 #
+# Depois, cria o repositório GitHub <github_owner>/<project_name> com um
+# catalog-info.yaml contendo o System do projeto e registra o arquivo no
+# Red Hat Developer Hub (veja vars/catalog.yml). Desligue com
+# catalog_enabled=false.
+#
 # Ao final, publica project_name com set_stats; num Workflow Template, o
 # próximo nó (ex.: deploy_httpd.yml) recebe essa variável automaticamente.
 
@@ -22,6 +27,9 @@
   hosts: localhost
   connection: local
   gather_facts: false
+
+  vars_files:
+    - vars/catalog.yml
 
   vars:
     project_display_name: ""
@@ -92,7 +100,47 @@
              if created_project is changed
              else 'Projeto ' ~ project_name ~ ' já existia; nada foi alterado.' }}
 
+    - name: Criar o repositório e registrar o projeto no Developer Hub
+      when: catalog_enabled | bool
+      block:
+        - name: Garantir o repositório GitHub do projeto
+          ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/github_repo.yml"
+          vars:
+            github_repo_name: "{{ project_name }}"
+            github_repo_create: true
+            github_repo_description: >-
+              {{ project_description
+                 | default('Catálogo do projeto ' ~ project_name ~ ' no OpenShift', true) }}
+
+        - name: Gravar o System do projeto no catálogo
+          ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/catalog_upsert.yml"
+          vars:
+            catalog_commit_message: "Registra o projeto {{ project_name }} no catálogo"
+            catalog_refresh_entity: "system:default/{{ project_name }}"
+            catalog_entities:
+              - apiVersion: backstage.io/v1alpha1
+                kind: System
+                metadata:
+                  name: "{{ project_name }}"
+                  title: "{{ project_display_name | default(project_name, true) }}"
+                  description: >-
+                    {{ project_description
+                       | default('Projeto ' ~ project_name ~ ' no OpenShift', true) }}
+                  annotations:
+                    github.com/project-slug: "{{ github_repo.full_name }}"
+                  tags:
+                    - openshift
+                  links:
+                    - url: "{{ github_repo.html_url }}"
+                      title: Repositório
+                      icon: github
+                spec:
+                  owner: "{{ catalog_owner }}"
+
     - name: Publicar o resultado para outros sistemas (RHDH, workflows)
       ansible.builtin.set_stats:
         data:
           project_name: "{{ project_name }}"
+          github_repo_url: "{{ github_repo.html_url | default('') }}"
+          catalog_entity_ref: >-
+            {{ ('system:default/' ~ project_name) if catalog_enabled | bool else '' }}
