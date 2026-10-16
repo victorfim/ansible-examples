@@ -1,0 +1,36 @@
+{
+  "name": "Criar projeto no OpenShift",
+  "description": "Parâmetros do playbook playbooks/openshift/create_project.yml",
+  "spec": [
+    {
+      "question_name": "Nome do projeto",
+      "question_description": "Até 63 caracteres: letras minúsculas, números e hífen.",
+      "variable": "project_name",
+      "type": "text",
+      "required": true,
+      "min": 1,
+      "max": 63,
+      "default": ""
+    },
+    {
+      "question_name": "Nome de exibição",
+      "question_description": "Nome mostrado no console do OpenShift (opcional).",
+      "variable": "project_display_name",
+      "type": "text",
+      "required": false,
+      "min": 0,
+      "max": 256,
+      "default": ""
+    },
+    {
+      "question_name": "Descrição",
+      "question_description": "Descrição do projeto (opcional).",
+      "variable": "project_description",
+      "type": "textarea",
+      "required": false,
+      "min": 0,
+      "max": 1024,
+      "default": ""
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+---
+# Cria um projeto (namespace) vazio no OpenShift.
+#
+# Variáveis:
+#   project_name          (obrigatória) nome do projeto, ex.: "minha-app-dev"
+#   project_display_name  (opcional)    nome de exibição no console
+#   project_description   (opcional)    descrição do projeto
+#
+# Autenticação: no AAP, associe ao Job Template uma credencial do tipo
+# "OpenShift or Kubernetes API Bearer Token". Ela injeta K8S_AUTH_HOST,
+# K8S_AUTH_API_KEY e K8S_AUTH_VERIFY_SSL, lidas automaticamente pelos
+# módulos da coleção kubernetes.core.
+#
+# O projeto é criado via ProjectRequest (mesmo comportamento do
+# `oc new-project`), respeitando o template de projeto do cluster.
+# Se o projeto já existir, nada é alterado.
+
+- name: Criar projeto vazio no OpenShift
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    project_display_name: ""
+    project_description: ""
+
+  tasks:
+    - name: Validar o nome do projeto
+      ansible.builtin.assert:
+        that:
+          - project_name is defined
+          - project_name | length > 0
+          - project_name | length <= 63
+          - project_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+          - not (project_name is match('^(openshift|kube)-'))
+          - project_name not in ['default', 'openshift', 'kube-system', 'kube-public']
+        fail_msg: >-
+          Nome de projeto inválido: '{{ project_name | default('') }}'.
+          Use até 63 caracteres, apenas letras minúsculas, números e hífen,
+          começando e terminando com letra ou número. Prefixos 'openshift-'
+          e 'kube-' e nomes reservados não são permitidos.
+        success_msg: "Nome de projeto válido: {{ project_name }}"
+        quiet: true
+
+    - name: Verificar se o projeto já existe
+      kubernetes.core.k8s_info:
+        api_version: project.openshift.io/v1
+        kind: Project
+        name: "{{ project_name }}"
+      register: existing_project
+      # Usuários sem permissão de admin recebem 403 ao consultar um projeto
+      # inexistente; nesse caso seguimos para a criação.
+      failed_when: false
+
+    - name: Criar o projeto
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: project.openshift.io/v1
+          kind: ProjectRequest
+          metadata:
+            name: "{{ project_name }}"
+          displayName: "{{ project_display_name }}"
+          description: "{{ project_description }}"
+      when: existing_project.resources | default([]) | length == 0
+      register: created_project
+
+    - name: Aguardar o projeto ficar ativo
+      kubernetes.core.k8s_info:
+        api_version: project.openshift.io/v1
+        kind: Project
+        name: "{{ project_name }}"
+      register: project_status
+      until: >-
+        project_status.resources | default([]) | length > 0 and
+        project_status.resources[0].status.phase | default('') == 'Active'
+      retries: 12
+      delay: 5
+      when: created_project is changed
+
+    - name: Resultado
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Projeto ' ~ project_name ~ ' criado com sucesso.'
+             if created_project is changed
+             else 'Projeto ' ~ project_name ~ ' já existia; nada foi alterado.' }}

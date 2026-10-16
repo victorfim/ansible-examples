@@ -1,0 +1,5 @@
+---
+# Instalado automaticamente pelo AAP na sincronização do projeto.
+collections:
+  - name: kubernetes.core
+    version: ">=3.0.0"
