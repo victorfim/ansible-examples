@@ -31,6 +31,25 @@
       "min": 0,
       "max": 1024,
       "default": ""
+    },
+    {
+      "question_name": "Implantar aplicação httpd de exemplo?",
+      "question_description": "Cria build, Deployment, Service e Route de uma aplicação httpd de exemplo no projeto.",
+      "variable": "deploy_sample_app",
+      "type": "multiplechoice",
+      "required": true,
+      "choices": "true\nfalse",
+      "default": "true"
+    },
+    {
+      "question_name": "Nome da aplicação",
+      "question_description": "Nome da aplicação de exemplo. Somado ao nome do projeto, no máximo 62 caracteres.",
+      "variable": "app_name",
+      "type": "text",
+      "required": false,
+      "min": 1,
+      "max": 61,
+      "default": "httpd-example"
     }
   ]
 }
