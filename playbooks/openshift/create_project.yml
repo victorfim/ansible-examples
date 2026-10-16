@@ -1,13 +1,15 @@
 ---
 # Cria um projeto (namespace) no OpenShift e, opcionalmente, implanta nele
-# uma aplicação httpd de exemplo, como faria o `oc new-app`.
+# uma aplicação httpd de exemplo com Deployment, Service e Route.
 #
 # Variáveis:
 #   project_name          (obrigatória) nome do projeto, ex.: "minha-app-dev"
 #   project_display_name  (opcional)    nome de exibição no console
 #   project_description   (opcional)    descrição do projeto
 #   deploy_sample_app     (opcional)    implanta a aplicação de exemplo; padrão true
-#   app_name              (opcional)    nome da aplicação; padrão "httpd-example"
+#   app_name              (opcional)    nome da aplicação; padrão "httpd"
+#   app_image             (opcional)    imagem do container; padrão é a imagem
+#                                       httpd do registry interno do cluster
 #
 # Autenticação: no AAP, associe ao Job Template uma credencial do tipo
 # "OpenShift or Kubernetes API Bearer Token". Ela injeta K8S_AUTH_HOST,
@@ -16,12 +18,6 @@
 #
 # O projeto é criado via ProjectRequest (mesmo comportamento do
 # `oc new-project`), respeitando o template de projeto do cluster.
-#
-# A aplicação equivale a:
-#   oc new-app registry.access.redhat.com/ubi9/httpd-24~https://github.com/sclorg/httpd-ex
-#   oc create route edge --service=<app_name>
-# Ela é criada com recursos do Kubernetes (ImageStream, BuildConfig,
-# Deployment, Service e Route), sem depender do binário `oc` no EE.
 # Tudo é idempotente: rodar de novo não duplica nada.
 
 - name: Criar projeto no OpenShift com aplicação httpd de exemplo
@@ -33,15 +29,11 @@
     project_display_name: ""
     project_description: ""
     deploy_sample_app: true
-    app_name: httpd-example
-    app_builder_image: registry.access.redhat.com/ubi9/httpd-24:latest
-    app_git_repo: https://github.com/sclorg/httpd-ex.git
-    app_git_ref: master
+    app_name: httpd
+    app_image: image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest
     app_labels:
       app: "{{ app_name }}"
       app.kubernetes.io/name: "{{ app_name }}"
-      app.kubernetes.io/component: "{{ app_name }}"
-      app.kubernetes.io/instance: "{{ app_name }}"
       app.kubernetes.io/part-of: "{{ project_name }}"
       app.openshift.io/runtime: apache
 
@@ -133,155 +125,71 @@
       when: created_project is changed
 
     # ------------------------------------------------------------------
-    # Aplicação de exemplo (equivalente ao oc new-app)
+    # Aplicação de exemplo: Deployment + Service + Route
     # ------------------------------------------------------------------
 
     - name: Implantar a aplicação httpd de exemplo
       when: deploy_sample_app | bool
       block:
-        - name: Criar ImageStream e BuildConfig
-          kubernetes.core.k8s:
-            state: present
-            namespace: "{{ project_name }}"
-            definition:
-              - apiVersion: image.openshift.io/v1
-                kind: ImageStream
-                metadata:
-                  name: "{{ app_name }}"
-                  labels: "{{ app_labels }}"
-                spec:
-                  lookupPolicy:
-                    local: false
-
-              - apiVersion: build.openshift.io/v1
-                kind: BuildConfig
-                metadata:
-                  name: "{{ app_name }}"
-                  labels: "{{ app_labels }}"
-                spec:
-                  source:
-                    type: Git
-                    git:
-                      uri: "{{ app_git_repo }}"
-                      ref: "{{ app_git_ref }}"
-                  strategy:
-                    type: Source
-                    sourceStrategy:
-                      from:
-                        kind: DockerImage
-                        name: "{{ app_builder_image }}"
-                  output:
-                    to:
-                      kind: ImageStreamTag
-                      name: "{{ app_name }}:latest"
-                  # ConfigChange dispara o primeiro build assim que a
-                  # BuildConfig é criada, como faz o oc new-app.
-                  triggers:
-                    - type: ConfigChange
-
-        - name: Aguardar o build terminar
-          kubernetes.core.k8s_info:
-            api_version: build.openshift.io/v1
-            kind: Build
-            namespace: "{{ project_name }}"
-            label_selectors:
-              - "buildconfig={{ app_name }}"
-          register: builds
-          until: >-
-            builds.resources | default([]) | length > 0 and
-            (builds.resources | sort(attribute='metadata.creationTimestamp') | last).status.phase
-            in ['Complete', 'Failed', 'Error', 'Cancelled']
-          retries: 60
-          delay: 10
-
-        - name: Confirmar que o build foi concluído com sucesso
-          vars:
-            last_build: "{{ builds.resources | sort(attribute='metadata.creationTimestamp') | last }}"
-          ansible.builtin.assert:
-            that: last_build.status.phase == 'Complete'
-            fail_msg: >-
-              O build {{ last_build.metadata.name }} terminou com status
-              {{ last_build.status.phase }}: {{ last_build.status.message | default('sem mensagem') }}.
-              Veja os logs com: oc logs build/{{ last_build.metadata.name }} -n {{ project_name }}
-            quiet: true
-
-        - name: Obter a imagem gerada pelo build
-          kubernetes.core.k8s_info:
-            api_version: image.openshift.io/v1
-            kind: ImageStream
-            namespace: "{{ project_name }}"
-            name: "{{ app_name }}"
-          register: image_stream
-
         - name: Criar Deployment, Service e Route
-          vars:
-            app_image: >-
-              {{ (image_stream.resources[0].status.tags
-                  | selectattr('tag', 'equalto', 'latest') | first).items[0].dockerImageReference }}
           kubernetes.core.k8s:
             state: present
             namespace: "{{ project_name }}"
             definition:
-              - apiVersion: apps/v1
-                kind: Deployment
+              - kind: Deployment
+                apiVersion: apps/v1
                 metadata:
                   name: "{{ app_name }}"
                   labels: "{{ app_labels }}"
-                  annotations:
-                    # Atualiza o Deployment sozinho a cada novo build.
-                    image.openshift.io/triggers: >-
-                      [{"from":{"kind":"ImageStreamTag","name":"{{ app_name }}:latest"},
-                      "fieldPath":"spec.template.spec.containers[?(@.name==\"{{ app_name }}\")].image"}]
                 spec:
                   replicas: 1
                   selector:
                     matchLabels:
-                      deployment: "{{ app_name }}"
+                      app: "{{ app_name }}"
                   template:
                     metadata:
-                      labels: "{{ app_labels | combine({'deployment': app_name}) }}"
+                      labels:
+                        app: "{{ app_name }}"
                     spec:
                       containers:
-                        - name: "{{ app_name }}"
+                        - name: container
                           image: "{{ app_image }}"
                           ports:
                             - containerPort: 8080
                               protocol: TCP
-                          readinessProbe:
-                            httpGet:
-                              path: /
-                              port: 8080
-                            initialDelaySeconds: 3
-                            periodSeconds: 10
-                          livenessProbe:
-                            httpGet:
-                              path: /
-                              port: 8080
-                            initialDelaySeconds: 10
-                            periodSeconds: 20
-                          resources:
-                            requests:
-                              cpu: 10m
-                              memory: 64Mi
-                            limits:
-                              memory: 256Mi
+                          resources: {}
+                          terminationMessagePath: /dev/termination-log
+                          terminationMessagePolicy: File
+                          imagePullPolicy: Always
+                      restartPolicy: Always
+                      terminationGracePeriodSeconds: 30
+                      dnsPolicy: ClusterFirst
+                      securityContext: {}
+                      schedulerName: default-scheduler
+                  strategy:
+                    type: RollingUpdate
+                    rollingUpdate:
+                      maxUnavailable: 25%
+                      maxSurge: 25%
+                  revisionHistoryLimit: 10
+                  progressDeadlineSeconds: 600
 
-              - apiVersion: v1
-                kind: Service
+              - kind: Service
+                apiVersion: v1
                 metadata:
                   name: "{{ app_name }}"
                   labels: "{{ app_labels }}"
                 spec:
                   selector:
-                    deployment: "{{ app_name }}"
+                    app: "{{ app_name }}"
                   ports:
-                    - name: 8080-tcp
+                    - name: http
                       port: 8080
                       targetPort: 8080
                       protocol: TCP
 
-              - apiVersion: route.openshift.io/v1
-                kind: Route
+              - kind: Route
+                apiVersion: route.openshift.io/v1
                 metadata:
                   name: "{{ app_name }}"
                   labels: "{{ app_labels }}"
@@ -290,7 +198,7 @@
                     kind: Service
                     name: "{{ app_name }}"
                   port:
-                    targetPort: 8080-tcp
+                    targetPort: http
                   tls:
                     termination: edge
                     insecureEdgeTerminationPolicy: Redirect

@@ -33,31 +33,31 @@ Exemplos de playbooks prontos para serem carregados como projeto no
 ### `playbooks/openshift/create_project.yml`
 
 Cria um projeto no OpenShift (equivalente a `oc new-project`) e implanta nele
-uma aplicação httpd de exemplo, equivalente a:
+uma aplicação httpd de exemplo composta por:
 
-```bash
-oc new-app registry.access.redhat.com/ubi9/httpd-24~https://github.com/sclorg/httpd-ex
-oc create route edge --service=httpd-example
-```
+- **Deployment** com a imagem `httpd` do registry interno do cluster
+  (`image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest`)
+- **Service** na porta 8080
+- **Route** HTTPS (TLS edge, com redirecionamento de HTTP para HTTPS)
 
-A aplicação é criada com ImageStream, BuildConfig (build S2I), Deployment,
-Service e Route HTTPS, sem precisar do binário `oc` no EE. O playbook espera o
-build e o rollout terminarem e mostra a URL no final. Tudo é idempotente:
-rodar de novo não duplica nada.
+O playbook espera o Deployment ficar disponível e mostra a URL no final. Tudo
+é idempotente: rodar de novo não duplica nada.
 
-| Variável               | Obrigatória | Padrão          | Descrição                              |
-|------------------------|-------------|-----------------|----------------------------------------|
-| `project_name`         | sim         |                 | Nome do projeto (padrão DNS, até 63 caracteres) |
-| `project_display_name` | não         | `""`            | Nome de exibição no console            |
-| `project_description`  | não         | `""`            | Descrição do projeto                   |
-| `deploy_sample_app`    | não         | `true`          | Implanta a aplicação de exemplo        |
-| `app_name`             | não         | `httpd-example` | Nome da aplicação                      |
+| Variável               | Obrigatória | Padrão   | Descrição                              |
+|------------------------|-------------|----------|----------------------------------------|
+| `project_name`         | sim         |          | Nome do projeto (padrão DNS, até 63 caracteres) |
+| `project_display_name` | não         | `""`     | Nome de exibição no console            |
+| `project_description`  | não         | `""`     | Descrição do projeto                   |
+| `deploy_sample_app`    | não         | `true`   | Implanta a aplicação de exemplo        |
+| `app_name`             | não         | `httpd`  | Nome do Deployment, Service e Route    |
+| `app_image`            | não         | imagem `httpd` do registry interno | Imagem do container |
 
 Ao final, `project_name` e `app_url` são publicados com `set_stats`, então
 ficam disponíveis para os próximos nós de um Workflow Template.
 
-O cluster precisa permitir builds e conseguir baixar imagens de
-`registry.access.redhat.com` e código de `github.com`.
+A imagem padrão vem da ImageStream `httpd` do namespace `openshift`, criada
+pelo Samples Operator. Se ela não existir no seu cluster, informe outra imagem
+em `app_image`.
 
 **Credencial:** tipo *OpenShift or Kubernetes API Bearer Token*, com a URL da
 API do cluster (ex.: `https://api.cluster.exemplo.com:6443`) e o token de um
