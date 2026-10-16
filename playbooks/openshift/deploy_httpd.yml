@@ -11,22 +11,34 @@
 # Autenticação: mesma credencial do create_project.yml
 # ("OpenShift or Kubernetes API Bearer Token").
 #
-# Idempotente: rodar de novo não duplica nada. Ao final, publica project_name
-# e app_url com set_stats.
+# Depois, adiciona (ou atualiza) um Component <project_name>-<app_name> no
+# catalog-info.yaml do repositório GitHub criado pelo create_project.yml e
+# pede ao Red Hat Developer Hub para relê-lo (veja vars/catalog.yml).
+# Os recursos recebem o label backstage.io/kubernetes-id, que liga o
+# Component às abas Kubernetes e Topology. Desligue com catalog_enabled=false.
+#
+# Idempotente: rodar de novo não duplica nada. Ao final, publica project_name,
+# app_url e catalog_entity_ref com set_stats.
 
 - name: DeployHttpd
   hosts: localhost
   connection: local
   gather_facts: false
 
+  vars_files:
+    - vars/catalog.yml
+
   vars:
     app_name: httpd
     app_image: image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest
+    # Nome único no catálogo: o mesmo app_name pode existir em vários projetos.
+    catalog_component_name: "{{ project_name }}-{{ app_name }}"
     app_labels:
       app: "{{ app_name }}"
       app.kubernetes.io/name: "{{ app_name }}"
       app.kubernetes.io/part-of: "{{ project_name }}"
       app.openshift.io/runtime: apache
+      backstage.io/kubernetes-id: "{{ catalog_component_name }}"
 
   tasks:
     - name: Validar os parâmetros
@@ -47,6 +59,15 @@
 
     - name: Verificar credencial
       ansible.builtin.import_tasks: tasks/check_credentials.yml
+
+    # Antes de mexer no cluster: o repositório do projeto (criado pelo
+    # create_project.yml) precisa existir para o catálogo ser atualizado.
+    - name: Localizar o repositório GitHub do projeto
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/github_repo.yml"
+      vars:
+        github_repo_name: "{{ project_name }}"
+        github_repo_create: false
+      when: catalog_enabled | bool
 
     - name: Verificar se o projeto existe
       kubernetes.core.k8s_info:
@@ -84,6 +105,7 @@
                 metadata:
                   labels:
                     app: "{{ app_name }}"
+                    backstage.io/kubernetes-id: "{{ catalog_component_name }}"
                 spec:
                   containers:
                     - name: container
@@ -164,8 +186,45 @@
       ansible.builtin.debug:
         msg: "Aplicação {{ app_name }} disponível em https://{{ app_route.resources[0].spec.host }}"
 
+    - name: Registrar a aplicação no catálogo do Developer Hub
+      when: catalog_enabled | bool
+      block:
+        - name: Gravar o Component da aplicação no catálogo
+          ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/catalog_upsert.yml"
+          vars:
+            catalog_commit_message: "Registra a aplicação {{ app_name }} no catálogo"
+            # Atualizar o System faz o RHDH reler o arquivo inteiro,
+            # inclusive o Component novo.
+            catalog_refresh_entity: "system:default/{{ project_name }}"
+            catalog_entities:
+              - apiVersion: backstage.io/v1alpha1
+                kind: Component
+                metadata:
+                  name: "{{ catalog_component_name }}"
+                  title: "{{ app_name }}"
+                  description: "Aplicação {{ app_name }} no projeto {{ project_name }} do OpenShift"
+                  annotations:
+                    backstage.io/kubernetes-id: "{{ catalog_component_name }}"
+                    backstage.io/kubernetes-namespace: "{{ project_name }}"
+                    github.com/project-slug: "{{ github_repo.full_name }}"
+                  tags:
+                    - openshift
+                    - httpd
+                  links:
+                    - url: "https://{{ app_route.resources[0].spec.host }}"
+                      title: Aplicação
+                      icon: web
+                spec:
+                  type: service
+                  lifecycle: "{{ catalog_lifecycle }}"
+                  owner: "{{ catalog_owner }}"
+                  system: "{{ project_name }}"
+
     - name: Publicar o resultado para outros sistemas (RHDH, workflows)
       ansible.builtin.set_stats:
         data:
           project_name: "{{ project_name }}"
           app_url: "https://{{ app_route.resources[0].spec.host }}"
+          catalog_entity_ref: >-
+            {{ ('component:default/' ~ catalog_component_name)
+               if catalog_enabled | bool else '' }}

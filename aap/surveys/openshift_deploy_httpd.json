@@ -21,6 +21,16 @@
       "min": 1,
       "max": 61,
       "default": "httpd"
+    },
+    {
+      "question_name": "Dono no catálogo",
+      "question_description": "Usuário ou grupo do Developer Hub dono das entidades (ex.: group:default/time-a).",
+      "variable": "catalog_owner",
+      "type": "text",
+      "required": true,
+      "min": 1,
+      "max": 255,
+      "default": "group:default/plataforma"
     }
   ]
 }

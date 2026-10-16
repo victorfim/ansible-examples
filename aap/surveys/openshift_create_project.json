@@ -31,6 +31,28 @@
       "min": 0,
       "max": 1024,
       "default": ""
+    },
+    {
+      "question_name": "Dono no catálogo",
+      "question_description": "Usuário ou grupo do Developer Hub dono das entidades (ex.: group:default/time-a).",
+      "variable": "catalog_owner",
+      "type": "text",
+      "required": true,
+      "min": 1,
+      "max": 255,
+      "default": "group:default/plataforma"
+    },
+    {
+      "question_name": "Visibilidade do repositório",
+      "question_description": "Visibilidade do repositório GitHub criado para o projeto.",
+      "variable": "github_repo_visibility",
+      "type": "multiplechoice",
+      "required": true,
+      "choices": [
+        "private",
+        "public"
+      ],
+      "default": "private"
     }
   ]
 }

@@ -1,0 +1,56 @@
+---
+# Credential Type customizado para o AAP: "GitHub + Developer Hub Catalog"
+#
+# Cadastro: Administration > Credential Types > Add. Copie o bloco "inputs"
+# para "Input configuration" e o bloco "injectors" para "Injector
+# configuration". Depois crie uma credencial desse tipo e associe-a aos Job
+# Templates CreateProject e DeployHttpd (junto com a credencial do OpenShift).
+#
+# Os playbooks leem essas variáveis de ambiente em
+# playbooks/openshift/vars/catalog.yml.
+
+name: GitHub + Developer Hub Catalog
+description: Token do GitHub e do Red Hat Developer Hub usados para criar o repositório do projeto e registrar o catalog-info.yaml.
+
+inputs:
+  fields:
+    - id: github_api_url
+      label: URL da API do GitHub
+      type: string
+      default: https://api.github.com
+      help_text: Para GitHub Enterprise Server, use https://<host>/api/v3
+    - id: github_owner
+      label: Organização (ou usuário) do GitHub
+      type: string
+      help_text: Onde os repositórios dos projetos são criados.
+    - id: github_token
+      label: Token do GitHub
+      type: string
+      secret: true
+      help_text: >-
+        Fine-grained PAT (ou token de GitHub App) com Administration
+        (read/write) para criar repositórios e Contents (read/write) na
+        organização.
+    - id: rhdh_url
+      label: URL do Developer Hub
+      type: string
+      help_text: >-
+        Ex.: https://backstage-developer-hub.apps.cluster.exemplo.com.
+        Deixe vazio para só gravar no GitHub e deixar o discovery provider
+        do RHDH encontrar o arquivo.
+    - id: rhdh_token
+      label: Token de acesso externo do Developer Hub
+      type: string
+      secret: true
+      help_text: Token estático configurado em backend.auth.externalAccess.
+  required:
+    - github_owner
+    - github_token
+
+injectors:
+  env:
+    GITHUB_API_URL: "{{ github_api_url }}"
+    GITHUB_OWNER: "{{ github_owner }}"
+    GITHUB_TOKEN: "{{ github_token }}"
+    RHDH_URL: "{{ rhdh_url }}"
+    RHDH_TOKEN: "{{ rhdh_token }}"
