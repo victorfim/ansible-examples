@@ -10,6 +10,7 @@ Exemplos de playbooks prontos para serem carregados como projeto no
 ├── collections/
 │   └── requirements.yml          # coleções instaladas pelo AAP na sincronização
 ├── playbooks/
+│   ├── timer.yml                 # Timer (espera de 5 min, para testes de timeout)
 │   └── openshift/
 │       ├── create_project.yml    # CreateProject
 │       ├── deploy_httpd.yml      # DeployHttpd
@@ -91,6 +92,16 @@ Crie um Workflow Template com o nó **CreateProject** seguido de
 Coloque o survey no Workflow (com `project_name` e, se quiser, `app_name`) em
 vez de nos Job Templates individuais.
 
+### Timer – `playbooks/timer.yml`
+
+Aguarda 5 minutos e termina com uma mensagem de sucesso. Serve para testar
+timeouts de outras aplicações (por exemplo, o timeout de um Job Template do
+AAP). Roda em `localhost`, não precisa de credencial nem de survey.
+
+| Variável        | Obrigatória | Padrão | Descrição                    |
+|-----------------|-------------|--------|------------------------------|
+| `timer_seconds` | não         | `300`  | Duração da espera em segundos |
+
 ## Execução local para teste
 
 ```bash
@@ -99,4 +110,5 @@ export K8S_AUTH_HOST=https://api.cluster.exemplo.com:6443
 export K8S_AUTH_API_KEY=$(oc whoami -t)
 ansible-playbook playbooks/openshift/create_project.yml -e project_name=meu-projeto
 ansible-playbook playbooks/openshift/deploy_httpd.yml   -e project_name=meu-projeto
+ansible-playbook playbooks/timer.yml                       # ou: -e timer_seconds=60
 ```
