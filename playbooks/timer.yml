@@ -1,0 +1,25 @@
+---
+# Timer: aguarda 5 minutos e termina com mensagem de sucesso.
+#
+# Usado para testes de timeout de outras aplicações (ex.: Job Template do AAP).
+# Não requer credenciais nem variáveis.
+#
+# Variável opcional:
+#   timer_seconds  duração da espera em segundos (padrão: 300)
+
+- name: Timer de 5 minutos
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    timer_seconds: 300
+
+  tasks:
+    - name: Aguardar o tempo do timer
+      ansible.builtin.pause:
+        seconds: "{{ timer_seconds }}"
+
+    - name: Informar sucesso
+      ansible.builtin.debug:
+        msg: "Timer de {{ (timer_seconds | int) // 60 }} minutos concluído com sucesso."
